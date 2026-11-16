@@ -1,10 +1,11 @@
 // Everything that stands still: grass, asphalt, paint, buildings, trees.
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { NIGHT } from './haze';
-import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, InstancedMesh, Matrix4, MeshStandardMaterial, Object3D, Vector3 } from 'three';
+import { NIGHT, glowing } from './haze';
+import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, InstancedMesh, Matrix4, MeshStandardMaterial, Object3D, Uniform, Vector3 } from 'three';
 import { buildGround, clearOf, onRoad, WALK } from './geo';
 import { cumLen, offset, pointOn, rng, type Net } from './net';
 import { Town, type Block } from './Town';
+import { settle, soaked, wet } from './wet';
 
 const NOISE = /* glsl */ `
 float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -15,6 +16,9 @@ float fbm(vec2 p){ float a = 0.5, s = 0.0; for(int i=0;i<4;i++){ s += a*vn(p); p
 
 /** How much of the street lamps' sodium light a road gives back after dark, so a road reads as a road and not as a row of dots. */
 const LIT = 'vec3(1.0, 0.6, 0.28)';
+
+/** For a material made in the markup: it takes the light of the place at night too. */
+const lit = (m: MeshStandardMaterial | null) => { if (m) glowing(m); };
 
 /** World-space grain on a material, so a flat colour reads as a surface. `lit` is what it gives back of the lamps at night. */
 export function grained(color: number, body: string, key: string, roughness = 0.95, lit = 0) {
@@ -34,7 +38,7 @@ export function grained(color: number, body: string, key: string, roughness = 0.
     }
   };
   m.customProgramCacheKey = () => key + (lit ? 'lit' + lit : '');
-  return m;
+  return glowing(m);
 }
 
 const GRASS = `
@@ -132,19 +136,24 @@ export function World({ net, blocks, wood, trees = true, season = 'autumn' }: {
   const mats = useMemo(
     () => ({
       grass: grained(GROUND[season].grass, worn(GRASS, season), 'grass' + season, 1),
-      walk: grained(0xa5a39b, worn(SLAB, season), 'slab' + season),
+      // what lies along the roads goes with them while a smear is dragged; the lots and the concrete of the houses stay
+      walk: wet(grained(0xa5a39b, worn(SLAB, season), 'slab' + season), 'ground'),
+      paving: grained(0xa5a39b, worn(SLAB, season), 'slab' + season),
       felt: grained(0xffffff, FELT, 'felt', 0.85),
-      kerb: grained(0xb3b0a8, ROOF, 'kerb'),
+      kerb: wet(grained(0xb3b0a8, ROOF, 'kerb'), 'ground'),
+      rim: grained(0xb3b0a8, ROOF, 'kerb'),
       pad: grained(0x787a79, LOT, 'lot'),
       // sun-bleached, the way a road looks from the air
-      road: grained(0x6b6d6f, ASPHALT, 'asphalt', 0.9, 0.35),
-      white: grained(0xe6e5de, PAINT, 'paint', 0.7, 0.55),
-      yellow: grained(0xcfae4a, PAINT, 'paint', 0.7, 0.55),
-      guide: grained(0xd08c00, PAINT, 'paint', 0.9),
+      road: wet(grained(0x6b6d6f, ASPHALT, 'asphalt', 0.9, 0.12), 'ground'),
+      white: wet(grained(0xe6e5de, PAINT, 'paint', 0.7, 0.3), 'ground'),
+      yellow: wet(grained(0xcfae4a, PAINT, 'paint', 0.7, 0.3), 'ground'),
+      guide: wet(grained(0xd08c00, PAINT, 'paint', 0.9), 'ground'),
     }),
     [season],
   );
   useEffect(() => () => Object.values(ground).forEach((g) => g.dispose()), [ground]);
+  // the ground shown now is made from these roads: pushed only by as much as the hand has moved since
+  useLayoutEffect(() => settle('ground', net), [ground, net]);
 
 
   return (
@@ -153,15 +162,17 @@ export function World({ net, blocks, wood, trees = true, season = 'autumn' }: {
         <planeGeometry args={[5000, 5000]} />
       </mesh>
       <mesh geometry={ground.walk} material={mats.walk} receiveShadow />
+      <mesh geometry={ground.yard} material={mats.paving} receiveShadow />
       <mesh geometry={ground.guide} material={mats.guide} receiveShadow />
       <mesh geometry={ground.kerb} material={mats.kerb} receiveShadow />
+      <mesh geometry={ground.rim} material={mats.rim} receiveShadow />
       <mesh geometry={ground.pad} material={mats.pad} receiveShadow />
       <mesh geometry={ground.road} material={mats.road} receiveShadow />
       <mesh geometry={ground.white} material={mats.white} receiveShadow />
       <mesh geometry={ground.yellow} material={mats.yellow} receiveShadow />
       <mesh geometry={ground.decks} material={mats.kerb} castShadow receiveShadow />
       <Buildings net={net} />
-      <Town net={net} blocks={blocks} paving={mats.walk} roofing={mats.felt} />
+      <Town net={net} blocks={blocks} paving={mats.paving} roofing={mats.felt} />
       <group visible={trees}>
         <Trees net={(wood ?? { net }).net} blocks={(wood ?? { blocks }).blocks} glade={wood?.green} season={season} />
       </group>
@@ -355,7 +366,10 @@ function Trees({ net, blocks, glade, season }: { net: Net; blocks: Block[]; glad
   const PINE = useMemo(pine, []);
   // in winter most of the leaves are gone: only a third of the cards are drawn
   useLayoutEffect(() => { crown.setDrawRange(0, season === 'winter' ? Math.floor(crown.index!.count / 18) * 6 : Infinity); }, [crown, season]);
-  const litter = useMemo(fallen, []);
+  // the street trees are planted last: from these on, each one goes with its road while a smear is dragged
+  const first = useMemo(() => ({ crown: new Uniform(1e9), stem: new Uniform(1e9), litter: new Uniform(1e9) }), []);
+  const litter = useMemo(() => wet(fallen(), 'trees', first.litter), [first]);
+  const soak = useMemo(() => ({ crown: soaked('trees', first.crown), stem: soaked('trees', first.stem) }), [first]);
   // everything is planted once; a road painted through only fells what is in its way
   const wood = useMemo(() => {
     const r = rng(23);
@@ -449,6 +463,7 @@ function Trees({ net, blocks, glade, season }: { net: Net; blocks: Block[]; glad
       }
     }
     // street trees: a row down each side of every proper road, in the outer strip of the sidewalk
+    first.crown.value = i; first.stem.value = e; first.litter.value = l;
     const solid = [...net.pads, ...net.buildings];
     const blocked = (x: number, y: number) => solid.some((q) => x > q.x0 - 2 && x < q.x1 + 2 && y > q.y0 - 2 && y < q.y1 + 2);
     // the trees of the park, planted along its walks: each on its own, a clean stem and a round crown
@@ -487,26 +502,27 @@ function Trees({ net, blocks, glade, season }: { net: Net; blocks: Block[]; glad
       }
     }
     m.count = i; f.count = j; fl.count = l; st.count = e;
+    settle('trees', net);
     for (const q of [m, f, fl, st]) {
       q.instanceMatrix.needsUpdate = true;
       if (q.instanceColor) q.instanceColor.needsUpdate = true;
     }
-  }, [wood, net, blocks, glade, season]);
+  }, [wood, net, blocks, glade, season, first]);
 
   return (
     <>
       <instancedMesh ref={ref} args={[crown, undefined, CAP]} castShadow receiveShadow frustumCulled={false}>
-        <meshStandardMaterial roughness={1} vertexColors side={DoubleSide} />
+        <meshStandardMaterial ref={lit} roughness={1} vertexColors side={DoubleSide} {...soak.crown} />
       </instancedMesh>
       <instancedMesh ref={stems} args={[undefined, undefined, STEMS]} castShadow frustumCulled={false}>
         <cylinderGeometry args={[0.6, 1, 1, 5]} />
-        <meshStandardMaterial roughness={1} />
+        <meshStandardMaterial roughness={1} {...soak.stem} />
       </instancedMesh>
       <instancedMesh ref={floor} args={[undefined, undefined, LITTER]} material={litter} receiveShadow frustumCulled={false}>
         <circleGeometry args={[1, 14]} />
       </instancedMesh>
       <instancedMesh ref={firs} args={[PINE, undefined, FIRS]} castShadow receiveShadow frustumCulled={false}>
-        <meshStandardMaterial roughness={1} flatShading vertexColors side={DoubleSide} />
+        <meshStandardMaterial ref={lit} roughness={1} flatShading vertexColors side={DoubleSide} />
       </instancedMesh>
     </>
   );

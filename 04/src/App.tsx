@@ -1,5 +1,5 @@
 // A drone parked over a stroad junction, through a day and a night of autumn, running fast.
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { MapControls } from '@react-three/drei';
 import { Bloom, ChromaticAberration, EffectComposer, SMAA, TiltShift2, ToneMapping, Vignette, wrapEffect } from '@react-three/postprocessing';
@@ -13,11 +13,14 @@ import { SEASONS, World, type Season } from './World';
 import { plantSmall, plantTown, turnSome, type Block } from './Town';
 import { People, Signs, Street } from './Life';
 import { Commons, plantCommons, standingCommons } from './Park';
-import { Painter, type Tool } from './Painter';
-import { buildNet, type V } from './net';
+import { Painter, Sketch, type Brush, type Tool } from './Painter';
+import { Bar, Overlays, TimeControl, hhmm } from './Controls';
+import { HeatIcon } from './Icons';
+import { buildNet, type Net, type V } from './net';
 import { MAP } from './map';
 import { baseIntent, derive, no, standing, type Intent } from './intent';
-import { addStroke, smear, smearStart } from './paint';
+import { addStroke, erase, smear, smearStart } from './paint';
+import { laid, madeAt, wetStart } from './wet';
 
 /** The grade: exposure, warmth, bite, how much colour is left, how grey the blacks are, and what the stock and the glass add. */
 type Grade = { gain: number; temp: number; bite: number; sat: number; lift: number; grain: number; bloom: number; dark: number; soft: number };
@@ -122,9 +125,12 @@ type Clock = { hour: number; hold: boolean; day: number; trail: number; lights: 
 const LIGHTS = ['geometry', 'webgpu', 'off'] as const;
 // ?hour=19 starts at seven in the evening instead
 const hourAsked = parseFloat(new URLSearchParams(location.search).get('hour') ?? '');
-const CLOCK: Clock = { hour: hourAsked >= 0 && hourAsked < 24 ? hourAsked : 15.3, hold: false, day: 240, trail: 8, lights: new URLSearchParams(location.search).has('gpu') || (!touch && !no('gpu')) ? 'webgpu' : 'geometry' };
+// the visitor's own time of day, unless ?hour= says otherwise
+const nowHour = () => { const d = new Date(); return d.getHours() + d.getMinutes() / 60; };
+// ?hold starts with the clock held at its hour, ?day= says how many seconds a whole day takes: both for filming
+const asked = new URLSearchParams(location.search), dayAsked = parseFloat(asked.get('day') ?? '');
+const CLOCK: Clock = { hour: hourAsked >= 0 && hourAsked < 24 ? hourAsked : nowHour(), hold: asked.has('hold'), day: dayAsked >= 20 ? dayAsked : 240, trail: 8, lights: new URLSearchParams(location.search).has('gpu') || (!touch && !no('gpu')) ? 'webgpu' : 'geometry' };
 const CLOCKS: [Exclude<keyof Clock, 'hold' | 'lights'>, string, number, number, number][] = [['hour', 'Time', 0, 24, 0.05], ['day', 'Day', 30, 600, 10], ['trail', 'Trails', 0, 16, 0.5]];
-const hhmm = (h: number) => `${Math.floor(h)}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`;
 /** The place as it starts: the streets, and a few flyovers laid over them the way a hand would paint them. ?debug starts on `MAP`. */
 const BASE: Intent = [
   [[-232, -68], [-150, 0], [-60, 82]],
@@ -133,6 +139,8 @@ const BASE: Intent = [
 ].reduce((it, line) => addStroke(it, line.map(([x, y]) => ({ x, y })), true) ?? it, baseIntent());
 /** One house in this many is left standing. */
 const KEEP = 2;
+/** Milliseconds a smear has to be held still before the ground is made of it for real. */
+const REST = 140;
 /** Roughly how many vehicles are out: what a phone can carry, and what a desk can. */
 const VEHICLES = touch ? 60 : 180;
 
@@ -270,12 +278,16 @@ const SHADOW_EVERY = 6, LOW_SUN = 0.35;
 const SHADE = { wide: 430, far: 400, tall: 70 };
 
 /** The sun, the sky and the moon: one light that casts shadows and one that fills them, moved and coloured by the hour. */
-function Sun({ speed, shadow, lazy, clock, scrub, onHour }: {
+function Sun({ speed, shadow, lazy, clock, scrub, onHour, live, readout }: {
   speed: number; shadow: boolean; lazy: boolean; clock: Clock;
   /** goes up when the hour was set by hand: only then does the clock jump to it */
   scrub: number;
   /** ?debug: told the hour now and then, so the slider runs with it */
   onHour?: (h: number) => void;
+  /** the hour as it is now, for a drag on the time to start from */
+  live: MutableRefObject<number>;
+  /** the time on the screen, written as text a few times a second */
+  readout: RefObject<HTMLSpanElement | null>;
 }) {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
@@ -293,9 +305,12 @@ function Sun({ speed, shadow, lazy, clock, scrub, onHour }: {
   useFrame((_, delta) => {
     const n = frame.current++;
     if (!clock.hold && speed > 0) {
-      hour.current = (hour.current + Math.min(delta, 0.1) * (speed / TIMELAPSE) * hoursPerSecond(hour.current, clock.day)) % 24;
+      // never backwards, and never out of the day: a clock that jumps must not leave an hour that is no hour
+      hour.current = (((hour.current + Math.min(Math.max(delta, 0), 0.1) * (speed / TIMELAPSE) * hoursPerSecond(hour.current, clock.day)) % 24) + 24) % 24;
       if (onHour && n % 8 === 0) onHour(hour.current);
     }
+    live.current = hour.current;
+    if (n % 8 === 0 && readout.current) readout.current.textContent = hhmm(hour.current);
     const k = skyAt(hour.current);
     if (lazy && n % (k.el < LOW_SUN ? SHADOW_EVERY / 2 : SHADOW_EVERY) === 0) gl.shadowMap.needsUpdate = true;
     const s = sun.current!, cos = Math.cos(k.el), sin = Math.sin(k.el);
@@ -347,12 +362,15 @@ const season: Season = (() => {
   const q = new URLSearchParams(location.search).get('season') as Season | null;
   return q && SEASONS.includes(q) ? q : 'autumn';
 })();
-const TOOLS: [Tool, string][] = [['road', 'Road'], ['bridge', 'Bridge'], ['smear', 'Smear'], ['trace', 'Trace']];
-
 export function App() {
-  // every state of the painting so far, so a stroke can be taken back
+  // every state of the painting so far, so a stroke can be taken back; and the ones taken back, so they can come again
   const [history, setHistory] = useState<Intent[]>(() => [debug ? MAP : BASE]);
+  const [redos, setRedos] = useState<Intent[]>([]);
   const [tool, setTool] = useState<Tool>('road');
+  // the brush that is picked when trace is off
+  const [brush, setBrush] = useState<Brush>('road');
+  const brushNow = useRef(brush);
+  brushNow.current = brush;
   // always a timelapse, sixty times life; P or space stops it
   const [paused, setPaused] = useState(false);
   const speed = paused ? 0 : TIMELAPSE;
@@ -369,6 +387,17 @@ export function App() {
   const [move, setMove] = useState(MOVE);
   const [clock, setClock] = useState(CLOCK);
   const [scrub, setScrub] = useState(0);
+  // the hour as the sky has it, and the text that shows it: Sun writes both, so a running clock does not re-render the page
+  const hourNow = useRef(clock.hour);
+  const readout = useRef<HTMLSpanElement>(null);
+  const [firstTime] = useState(() => hhmm(clock.hour));
+  // a drag on the time: the hour is set and held, the scene follows it
+  const setHour = useCallback((h: number) => {
+    hourNow.current = h;
+    if (readout.current) readout.current.textContent = hhmm(h);
+    setClock((c) => ({ ...c, hour: h, hold: true }));
+    setScrub((n) => n + 1);
+  }, []);
   // is there a WebGPU to draw the lights with: not known until it is asked, and only asked where it matters
   const [gpuOk, setGpuOk] = useState<boolean | null>(null);
   useEffect(() => { if (gpuOk === null && (debug || clock.lights === 'webgpu')) gpu().then((d) => setGpuOk(!!d)); }, [gpuOk, clock.lights]);
@@ -391,6 +420,7 @@ export function App() {
       const map = JSON.parse(await navigator.clipboard.readText().catch(() => prompt('Map JSON') ?? '')) as Intent;
       if (!Array.isArray(map) || !map.every((s) => Array.isArray(s?.pts))) throw 0;
       setHistory((h) => [...h, map]);
+      setRedos([]);
       setCopied('pasted');
     } catch {
       setCopied('bad');
@@ -413,10 +443,55 @@ export function App() {
   const noteBox = useRef<HTMLDivElement>(null);
   const onNote = useCallback((t: string) => { if (noteBox.current) noteBox.current.textContent = t; }, []);
   // ?no=houses,trees: without the houses nothing is in the way of a road; the trees are only put out of sight
-  // a smear in progress: the paint as it is being pushed, not yet in the history
-  const [live, setLive] = useState<Intent | null>(null);
-  const grab = useRef<{ base: Intent; from: V } | null>(null);
-  const intent = live ?? history[history.length - 1];
+  // a smear in progress: what it took hold of, and where the hand is now. Nothing is built while it is dragged:
+  // what is on the roads is pushed in the shaders (wet.ts), and the paint is laid when the hand lets go
+  const grab = useRef<{ base: Intent; from: V; to?: V; rest?: { intent: Intent; at: V } } | null>(null);
+  const still = useRef(0);
+  // A watch on the traffic. It has been seen to drain away, with nobody coming in, and never where it could be looked
+  // at: so when the roads have stood empty for a while with the traffic running, what the sim says of itself is put on
+  // the page, to be read off or sent on. Gone again when the traffic is back.
+  const alarm = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    let since = 0, seen = { sent: 0, blocked: 0, none: 0, lost: 0 }, hid = 0;
+    const vis = () => { if (document.hidden) hid++; };
+    document.addEventListener('visibilitychange', vis);
+    const id = setInterval(() => {
+      const sim = (window as any).sim;
+      if (!sim || !alarm.current) return;
+      let out = 0, parked = 0;
+      const kinds: Record<string, number> = {};
+      for (const c of sim.cars) { if (c.state === 2) parked++; else { out++; const k = sim.types?.[c.type]?.name ?? c.type; kinds[k] = (kinds[k] ?? 0) + 1; } }
+      const t = sim.tally;
+      if (t) { for (const k of Object.keys(seen) as (keyof typeof seen)[]) seen[k] += t[k]; sim.tally = { sent: 0, blocked: 0, none: 0, lost: 0 }; }
+      if (out > 8) { since = sim.time; seen = { sent: 0, blocked: 0, none: 0, lost: 0 }; alarm.current.textContent = ''; return; }
+      if (!since) since = sim.time;
+      // five minutes of their time, a few seconds of ours
+      if (sim.time - since < 300) return;
+      const lanes = sim.net?.lanes ?? [];
+      alarm.current.textContent = 'TRAFFIC GONE - please send this to the session\n' + JSON.stringify({
+        out, parked, kinds, target: sim.target, quiet: sim.quiet, hour: +hourNow.current.toFixed(2), simTime: Math.round(sim.time), emptyFor: Math.round(sim.time - since),
+        tries: seen, sources: (sim.sources ?? []).map((x: any) => ({ acc: x.acc, rate: x.rate, lanes: x.lanes.length, rank: x.lanes[0]?.road?.rank, waiting: x.lanes[0]?.cars?.length })),
+        lanes: lanes.length, shut: lanes.filter((l: any) => l.shut).length, rush: lanes.filter((l: any) => l.rush).length,
+        works: sim.works?.length, cars: sim.cars.length, hiddenTimes: hid, hiddenNow: document.hidden,
+      }, null, 1);
+    }, 1000);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', vis); };
+  }, []);
+  // ?debug: how the traffic stands, read off the sim a couple of times a second, to see at a glance when it has gone wrong
+  const gauge = useRef<HTMLOutputElement>(null);
+  useEffect(() => {
+    if (!debug) return;
+    const id = setInterval(() => {
+      const sim = (window as any).sim as { cars: { state: number; v: number }[]; quiet: number; target: number; time: number } | undefined;
+      if (!sim || !gauge.current) return;
+      let out = 0, moving = 0, parked = 0;
+      for (const c of sim.cars) { if (c.state === 2) parked++; else { out++; if (c.v > 1) moving++; } }
+      gauge.current.textContent = `cars ${out} out, ${moving} moving, ${parked} parked · ask ${Math.round(sim.target)} · quiet ${Number(sim.quiet).toFixed(2)} · ${Math.round(sim.time)} s`;
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
+  const sketch = useRef<(strokes: { pts: V[] }[] | null) => void>(() => {});
+  const intent = history[history.length - 1];
   // the roads are never edited: they are what the rules make of the strokes
   // the housing is planted once, on the place as it first stood, and is in the way from then on
   const first = useMemo(() => buildNet(derive(BASE)), []);
@@ -434,22 +509,39 @@ export function App() {
   // everything with walls is in the way: the housing, and the sheds that were there from the start
   // the little ones are not: a road goes through them
   const walls = useMemo(() => (houses ? [...town.filter((b) => !b.small), ...first.buildings] : NONE), [houses, town, first]);
-  const net = useMemo(() => {
-    const n = buildNet(derive(intent, walls));
-    if (!houses) return { ...n, buildings: [] };
+  // what the rules make of a painting, made once for each: a smear let go where the hand last rested is not made again
+  const nets = useRef(new WeakMap<Intent, Net>());
+  const roadsOf = useCallback((it: Intent, up: Block[]) => {
+    const made = nets.current.get(it);
+    if (made) return made;
+    let n = buildNet(derive(it, walls));
+    if (!houses) n = { ...n, buildings: [] };
     // the filling stations that still stand bring their roofs and their yards
-    const fuel = blocks.filter((b) => b.pumps);
-    return fuel.length ? { ...n, buildings: [...n.buildings, ...fuel.map((b) => b.pumps!)], pads: [...n.pads, ...fuel.map((b) => b.pad!)] } : n;
-  }, [intent, walls, houses, blocks]);
+    const fuel = up.filter((b) => b.pumps);
+    if (houses && fuel.length) n = { ...n, buildings: [...n.buildings, ...fuel.map((b) => b.pumps!)], pads: [...n.pads, ...fuel.map((b) => b.pad!)] };
+    nets.current.set(it, n);
+    return n;
+  }, [walls, houses]);
+  const net = useMemo(() => roadsOf(intent, blocks), [roadsOf, intent, blocks]);
+  // a smear held still for a moment: the ground is made of it for real, all the rest waits for the hand to let go
+  const [rest, setRest] = useState<{ intent: Intent; at: V } | null>(null);
+  const restNet = useMemo(() => {
+    if (!rest) return null;
+    const n = roadsOf(rest.intent, houses ? standing(rest.intent, town) : NONE);
+    madeAt(n, rest.at);
+    return n;
+  }, [roadsOf, rest, town]);
 
   // The stroke is not built the moment the hand lets go: the brush leaves a ghost of it, the frame is shown,
   // and then the rules are run and the town rebuilt, as something that may be interrupted.
-  // the ground first, then the trees, then the traffic, then the people and the signs
+  // the rules in a frame of their own, then the ground, then the trees, then the traffic, then the people and the signs.
+  // Until each is made again, what it showed before is still pushed by a smear that was let go (wet.ts)
   // what is common ground: the park, the pitch, the school and the hedges, planted once like the housing,
   // and whatever of it the roads as they are now have left
   const commons = useMemo(() => plantCommons(first, town), [first, town]);
   const place = useMemo(() => ({ net, blocks, green: standingCommons(commons, net, blocks) }), [net, blocks, commons]);
-  const wood = useLater(place, 1), roads = useLater(net, 2), life = useLater(place, 3);
+  const ground = useLater(restNet ?? net, 1);
+  const wood = useLater(place, 3), roads = useLater(net, 5), life = useLater(place, 7);
   // what the WebGPU lights cannot be seen through
   const hides = useMemo(() => [...life.blocks, ...life.net.buildings], [life]);
 
@@ -457,38 +549,80 @@ export function App() {
     requestAnimationFrame(() => setTimeout(() => {
       const next = addStroke(top.current, pts, bridge, walls, air);
       done?.(!!next);
-      if (next) startTransition(() => setHistory((h) => [...h, next]));
+      if (next) { startTransition(() => setHistory((h) => [...h, next])); setRedos([]); }
     }, 0));
   }, [walls]);
+  // an erase drag: one entry in the history, so Undo gives the size back
+  const onErase = useCallback((pts: V[]) => {
+    const next = erase(top.current, pts, 6);
+    if (next === top.current) return;
+    startTransition(() => setHistory((h) => [...h, next]));
+    setRedos([]);
+  }, []);
   const top = useRef(history[history.length - 1]);
   top.current = history[history.length - 1];
-  const liveRef = useRef(live);
-  liveRef.current = live;
   const onSmear = useCallback((phase: 'start' | 'move' | 'end', p: V) => {
-    if (phase === 'start') grab.current = { base: smearStart(top.current, p), from: p };
-    else if (phase === 'move' && grab.current) setLive(smear(grab.current.base, grab.current.from, p));
-    else if (phase === 'end') {
-      const done = liveRef.current;
+    const g = grab.current;
+    clearTimeout(still.current);
+    if (phase === 'start') {
+      grab.current = { base: smearStart(top.current, p), from: p };
+      wetStart(p);
+    } else if (phase === 'move' && g) {
+      g.to = p;
+      // the town is not pushed about under the hand: only the strokes that move are shown, as lines and dots,
+      // and the town is made again when the hand lets go
+      const now = smear(g.base, g.from, p);
+      sketch.current(now.filter((s, i) => s !== g.base[i]));
+    } else if (phase === 'end') {
       grab.current = null;
-      setLive(null);
-      if (done) setHistory((h) => [...h, done]);
+      sketch.current(null);
+      setRest(null);
+      if (g?.to) {
+        const done = g.rest?.at === g.to ? g.rest.intent : smear(g.base, g.from, g.to);
+        const made = nets.current.get(done);
+        if (made) laid(made);
+        setHistory((h) => [...h, done]);
+        setRedos([]);
+      }
     }
   }, []);
   // for trying strokes from the console
   useEffect(() => { (window as any).paint = onStroke; }, [onStroke]);
-  const undo = useCallback(() => setHistory((h) => (h.length > 1 ? h.slice(0, -1) : h)), []);
+  // undo moves the top of the history onto the redo stack, and redo moves it back; a new stroke clears the redo stack
+  const undo = useCallback(() => {
+    if (history.length < 2) return;
+    setRedos([...redos, history[history.length - 1]]);
+    setHistory(history.slice(0, -1));
+  }, [history, redos]);
+  const redo = useCallback(() => {
+    if (!redos.length) return;
+    setHistory([...history, redos[redos.length - 1]]);
+    setRedos(redos.slice(0, -1));
+  }, [history, redos]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'z' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); undo(); }
+      // cmd or ctrl with Z undoes; with shift as well, it redoes
+      if (e.key.toLowerCase() === 'z' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
       // P or space holds the frame, and lets go of it again
       if (e.key === ' ' || e.key === 'p' || e.key === 'P') {
         e.preventDefault();
         setPaused((v) => !v);
       }
+      // R reads the traffic of a road (trace), and R again takes the brush back up
+      if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey && !e.altKey) setTool((t) => (t === 'trace' ? brushNow.current : 'trace'));
+      // T takes up the next brush, shift and T the one before
+      if ((e.key === 't' || e.key === 'T') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const order: Brush[] = ['road', 'bridge', 'smear', 'erase'];
+        setBrush((b) => {
+          const next = order[(order.indexOf(b) + (e.shiftKey ? order.length - 1 : 1)) % order.length];
+          setTool(next);
+          return next;
+        });
+      }
     };
     addEventListener('keydown', key);
     return () => removeEventListener('keydown', key);
-  }, [undo]);
+  }, [undo, redo]);
 
   return (
     <>
@@ -503,14 +637,15 @@ export function App() {
         <color attach="background" args={[HAZE]} />
         <Pace fps={fps} />
         <Drone shot={shot} move={move} set={set} onShot={debug ? onShot : undefined} />
-        <Sun speed={speed} shadow={fx.shadow} lazy={fx.lazy} clock={clock} scrub={scrub} onHour={debug ? onHour : undefined} />
-        <World net={net} blocks={blocks} wood={wood} trees={trees} season={season} />
+        <Sun speed={speed} shadow={fx.shadow} lazy={fx.lazy} clock={clock} scrub={scrub} onHour={debug ? onHour : undefined} live={hourNow} readout={readout} />
+        <World net={ground} blocks={blocks} wood={wood} trees={trees} season={season} />
         <Cars net={roads} speed={speed} target={VEHICLES} trail={lights === 'off' ? 0 : clock.trail} glow={lights === 'webgpu'} walls={hides} onGlowFail={noGpu} shade={!fx.lazy} heat={heat} trace={tool === 'trace' ? trace : null} onNote={onNote} onSim={onSim} />
         <Commons green={place.green} speed={speed} />
         <People net={life.net} blocks={life.blocks} walks={life.green.walks} rides={life.green.rides} speed={speed} shade={!fx.lazy} />
         <Signs net={life.net} blocks={life.blocks} />
         <Street net={life.net} blocks={life.blocks} speed={speed} />
-        <Painter net={net} tool={tool} onStroke={onStroke} onSmear={onSmear} onTrace={setTrace} />
+        <Sketch api={sketch} />
+        <Painter net={ground} tool={tool} onStroke={onStroke} onSmear={onSmear} onTrace={setTrace} onErase={onErase} />
         <EffectComposer multisampling={fx.aa === 'msaa4' ? 4 : fx.aa === 'msaa2' ? 2 : 0}>
           {fx.tilt && <TiltShift2 blur={lens.blur} taper={lens.taper} start={start} end={end} samples={touch ? 10 : 18} />}
           {/* the lights bleed into what is beside them, as they do through glass */}
@@ -524,11 +659,15 @@ export function App() {
           {fx.aa === 'smaa' ? <SMAA /> : <></>}
         </EffectComposer>
       </Canvas>
-      <div className="tools side">
-        <button className={heat ? 'on' : ''} onClick={() => setHeat((v) => !v)}>Heat</button>
+      {/* top right: the time and its hold, then the overlays; a second overlay is one more entry */}
+      <div className="corner">
+        <TimeControl now={hourNow} readout={readout} first={firstTime} hold={clock.hold} onHold={() => setClock((c) => ({ ...c, hold: !c.hold }))} onSet={setHour} />
+        <Overlays items={[{ id: 'heat', label: 'Heat map', icon: <HeatIcon />, on: heat, toggle: () => setHeat((v) => !v) }]} />
       </div>
+      <pre className="alarm" ref={alarm} />
       {shot && (
         <div className="pane">
+          <output className="gauge" ref={gauge} />
           {SLIDERS.map(([k, label, min, max, step]) => (
             <label key={k}>
               <span>{label}</span>
@@ -603,12 +742,11 @@ export function App() {
         </div>
       )}
       {tool === 'trace' && <div className="note" ref={noteBox}>{trace ? '' : 'click a road'}</div>}
-      <div className="tools">
-        {TOOLS.map(([t, label]) => (
-          <button key={t} className={t === tool ? 'on' : ''} onClick={() => setTool(t)}>{label}</button>
-        ))}
-        <button disabled={history.length < 2} onClick={undo}>Undo</button>
-      </div>
+      <Bar
+        tool={tool} brush={brush}
+        onTool={setTool} onBrush={setBrush}
+        canUndo={history.length > 1} canRedo={redos.length > 0} onUndo={undo} onRedo={redo}
+      />
     </>
   );
 }

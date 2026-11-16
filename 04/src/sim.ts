@@ -112,6 +112,10 @@ export class Sim {
   freed: { type: number; slot: number }[] = [];
   /** roughly how many vehicles should be out on the roads; null leaves it to the place */
   target = 0;
+  /** How much of the night's quiet there is, 0 by day and 1 from nine at night to half past five: the big roads stay busy, the small ones empty. */
+  quiet = 0;
+  /** What became of every try to send someone in, since the count was last read: in, way in not clear, no vehicle to be had, no way through. */
+  tally = { sent: 0, blocked: 0, none: 0, lost: 0 };
   /** how many are out on the roads now, the parked ones not counted */
   private rand: () => number;
   private nextId = 1;
@@ -188,6 +192,13 @@ export class Sim {
       return best;
     };
     const lanes = net.lanes;
+    // the box round each lane: one that is out of reach is not worth finding the nearest point of
+    const box = new Float64Array(lanes.length * 4);
+    lanes.forEach((l, k) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const p of l.pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+      box.set([x0, y0, x1, y1], k * 4);
+    });
     for (let i = this.cars.length - 1; i >= 0; i--) {
       const c = this.cars[i];
       const st = c.stall ? same(c.stall) : null;
@@ -204,7 +215,11 @@ export class Sim {
       // the nearest lane going its way
       let best: Lane | null = null, bs = 0, bd = 7;
       const dx = Math.cos(c.ang), dy = Math.sin(c.ang);
-      for (const l of lanes) {
+      for (let k = 0; k < lanes.length; k++) {
+        // (a point found on a stretch of no length may lie a metre past it)
+        const bx = Math.max(box[k * 4] - c.x, c.x - box[k * 4 + 2], 0), by = Math.max(box[k * 4 + 1] - c.y, c.y - box[k * 4 + 3], 0);
+        if (Math.hypot(bx, by) > bd + 2) continue;
+        const l = lanes[k];
         const s = project(l, c);
         at(l, s, P);
         const d = Math.hypot(P.x - c.x, P.y - c.y);
@@ -363,19 +378,23 @@ export class Sim {
     let out = 0;
     for (const c of this.cars) if (c.state !== PARKED) out++;
     // asked for a number, the ways in open up or shut until about that many are out
-    const flow = out >= this.target ? 0 : Math.min(8, 0.4 + 10 * (1 - out / this.target));
+    const q = this.quiet, target = this.target * (1 - 0.2 * q);
+    const flow = out >= target ? 0 : Math.min(8, 0.4 + 10 * (1 - out / target));
     for (const src of this.sources) {
-      src.acc += flow * src.rate * dt * (0.75 + 0.5 * Math.sin(this.time * 0.021 + src.node.id));
+      // at night the big roads are as busy as ever; hardly anyone comes in by a small one
+      const hush = 1 - (src.lanes[0].road!.rank >= 3 ? 0 : 0.93) * q;
+      src.acc += hush * flow * src.rate * dt * (0.75 + 0.5 * Math.sin(this.time * 0.021 + src.node.id));
       if (src.acc < 1) continue;
       const lane = src.lanes[(r() * src.lanes.length) | 0];
       let clear = true;
       for (const o of lane.cars) if (o.s - o.len < 12) clear = false;
-      if (!clear) { src.acc = Math.min(src.acc, 3); continue; }
+      if (!clear) { src.acc = Math.min(src.acc, 3); this.tally.blocked++; continue; }
       const c = this.make(false);
-      if (!c) continue;
+      if (!c) { this.tally.none++; continue; }
       src.acc -= 1;
       const wantsStall = this.types[c.type].parks && r() < 0.18;
-      if (!this.setRoute(c, lane, wantsStall)) { this.remove(c); continue; }
+      if (!this.setRoute(c, lane, wantsStall)) { this.remove(c); this.tally.lost++; continue; }
+      this.tally.sent++;
       c.lane = lane; lane.cars.push(c);
       c.s = c.len; c.v = lane.speed * 0.8; c.lcAt = 8 + r() * 40;
     }
@@ -390,7 +409,8 @@ export class Sim {
       const c = this.cars[i];
       if (c.state === PARKED) {
         c.dwell -= dt;
-        if (c.dwell <= 0) this.tryLeave(c);
+        // and whoever is parked for the night mostly stays parked
+        if (c.dwell <= 0) { if (q > 0 && r() < q * 0.9) c.dwell = 60 + r() * 240; else this.tryLeave(c); }
       } else if (c.state === PARKING) {
         c.t += dt / 3.2;
         this.movePose(c, c.stall!.p.x, c.stall!.p.y, c.stall!.ang);
