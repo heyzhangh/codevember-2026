@@ -1,5 +1,6 @@
 // Everything that stands still: grass, asphalt, paint, buildings, trees.
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { NIGHT } from './haze';
 import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, InstancedMesh, Matrix4, MeshStandardMaterial, Object3D, Vector3 } from 'three';
 import { buildGround, clearOf, onRoad, WALK } from './geo';
 import { cumLen, offset, pointOn, rng, type Net } from './net';
@@ -12,8 +13,11 @@ float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
 float fbm(vec2 p){ float a = 0.5, s = 0.0; for(int i=0;i<4;i++){ s += a*vn(p); p = p*2.03 + 17.1; a *= 0.5; } return s; }
 `;
 
-/** World-space grain on a material, so a flat colour reads as a surface. */
-export function grained(color: number, body: string, key: string, roughness = 0.95) {
+/** How much of the street lamps' sodium light a road gives back after dark, so a road reads as a road and not as a row of dots. */
+const LIT = 'vec3(1.0, 0.6, 0.28)';
+
+/** World-space grain on a material, so a flat colour reads as a surface. `lit` is what it gives back of the lamps at night. */
+export function grained(color: number, body: string, key: string, roughness = 0.95, lit = 0) {
   const m = new MeshStandardMaterial({ color, roughness, metalness: 0, side: DoubleSide });
   m.onBeforeCompile = (s) => {
     s.vertexShader = s.vertexShader
@@ -22,8 +26,14 @@ export function grained(color: number, body: string, key: string, roughness = 0.
     s.fragmentShader = s.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vWp;\n' + NOISE)
       .replace('#include <color_fragment>', '#include <color_fragment>\n{ vec2 p = vWp.xz; ' + body + ' }');
+    if (lit) {
+      s.uniforms.uNight = NIGHT;
+      s.fragmentShader = s.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uNight;')
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\ntotalEmissiveRadiance += diffuseColor.rgb * ${LIT} * ${lit.toFixed(3)} * uNight;`);
+    }
   };
-  m.customProgramCacheKey = () => key;
+  m.customProgramCacheKey = () => key + (lit ? 'lit' + lit : '');
   return m;
 }
 
@@ -109,10 +119,13 @@ const worn = (body: string, s: Season) => {
   return body.replaceAll('DRIFT_A', g.a).replaceAll('DRIFT_B', g.b).replaceAll('DRIFT_K', g.k.toFixed(2)).replaceAll('DRY', g.dry.toFixed(2)).replaceAll('SNOW', g.snow.toFixed(2));
 };
 
+/** What the park, the pitch and the school ask of the trees: where none of the woods may stand, and the ones planted along the walks. */
+export interface Glade { keep: (x: number, y: number) => boolean; trees: { x: number; y: number; s: number; k: number }[] }
+
 export function World({ net, blocks, wood, trees = true, season = 'autumn' }: {
   net: Net; blocks: Block[];
   /** the place as the trees know it: a frame behind the ground, so that felling them is not part of laying a road */
-  wood?: { net: Net; blocks: Block[] };
+  wood?: { net: Net; blocks: Block[]; green?: Glade };
   trees?: boolean; season?: Season;
 }) {
   const ground = useMemo(() => buildGround(net), [net]);
@@ -124,9 +137,9 @@ export function World({ net, blocks, wood, trees = true, season = 'autumn' }: {
       kerb: grained(0xb3b0a8, ROOF, 'kerb'),
       pad: grained(0x787a79, LOT, 'lot'),
       // sun-bleached, the way a road looks from the air
-      road: grained(0x6b6d6f, ASPHALT, 'asphalt', 0.9),
-      white: grained(0xe6e5de, PAINT, 'paint', 0.7),
-      yellow: grained(0xcfae4a, PAINT, 'paint', 0.7),
+      road: grained(0x6b6d6f, ASPHALT, 'asphalt', 0.9, 0.35),
+      white: grained(0xe6e5de, PAINT, 'paint', 0.7, 0.55),
+      yellow: grained(0xcfae4a, PAINT, 'paint', 0.7, 0.55),
       guide: grained(0xd08c00, PAINT, 'paint', 0.9),
     }),
     [season],
@@ -150,7 +163,7 @@ export function World({ net, blocks, wood, trees = true, season = 'autumn' }: {
       <Buildings net={net} />
       <Town net={net} blocks={blocks} paving={mats.walk} roofing={mats.felt} />
       <group visible={trees}>
-        <Trees net={(wood ?? { net }).net} blocks={(wood ?? { blocks }).blocks} season={season} />
+        <Trees net={(wood ?? { net }).net} blocks={(wood ?? { blocks }).blocks} glade={wood?.green} season={season} />
       </group>
     </group>
   );
@@ -336,7 +349,7 @@ function fallen() {
   return m;
 }
 
-function Trees({ net, blocks, season }: { net: Net; blocks: Block[]; season: Season }) {
+function Trees({ net, blocks, glade, season }: { net: Net; blocks: Block[]; glade?: Glade; season: Season }) {
   const ref = useRef<InstancedMesh>(null), firs = useRef<InstancedMesh>(null), floor = useRef<InstancedMesh>(null), stems = useRef<InstancedMesh>(null);
   const crown = useMemo(tuft, []);
   const PINE = useMemo(pine, []);
@@ -362,9 +375,11 @@ function Trees({ net, blocks, season }: { net: Net; blocks: Block[]; season: Sea
       const gx = Math.floor(x / 30), gy = Math.floor(y / 30);
       const spot = at(gx, gy) < 0.3 + clump(x, y) * 0.25
         && Math.hypot(x - (gx + 0.25 + 0.5 * at(gx + 7, gy)) * 30, y - (gy + 0.25 + 0.5 * at(gx, gy + 13)) * 30) < 5 + 5 * at(gx + 3, gy + 5);
-      const keep = spot || r() <= Math.min(1, (deep - 0.25) * 5);
+      const thick = !spot && r() <= Math.min(1, (deep - 0.25) * 5);
       // under the trees there is little room for bushes
       const kind = deep > 0.45 ? 0.3 + r() * 0.7 : r();
+      // but out in front of a wood they stand thick: scrub where the trees give out
+      const keep = spot || thick || (kind <= 0.3 && deep > 0.02 && deep <= 0.25 && at(Math.floor(x * 3), Math.floor(y * 3)) < 0.55);
       const fir = kind > 0.3 && r() < (stand(x, y) ? 0.7 : 0.08);
       const bush = kind <= 0.3;
       const size = bush ? 0.9 + r() * 1.1 : fir ? 2 + r() * 1.4 : 2.4 + r() * 3.2;
@@ -419,9 +434,11 @@ function Trees({ net, blocks, season }: { net: Net; blocks: Block[]; season: Sea
     };
     for (const t of wood) {
       if (!clearOf(net, t.x, t.y, 6)) continue;
-      // a wood keeps its distance from a house: a yard's width of open ground
+      // a wood keeps its distance from a house: a yard's width of open ground. A little house stands in among the trees
       const gap = t.deep ? 18 : 5;
-      if (up.some((b) => t.x > b.x0 - gap && t.x < b.x1 + gap && t.y > b.y0 - gap && t.y < b.y1 + gap)) continue;
+      if (up.some((b) => { const g = b.small ? (t.size ? 4.5 : 3.6) : gap; return t.x > b.x0 - g && t.x < b.x1 + g && t.y > b.y0 - g && t.y < b.y1 + g; })) continue;
+      // and none of it on the pitch, in the school yard or on a walk of the park
+      if (glade && !glade.keep(t.x, t.y)) continue;
       if (t.fir) {
         if (j < FIRS) { f.setMatrixAt(j, t.blobs[0].m); f.setColorAt(j++, t.blobs[0].c); }
       } else if (i + t.blobs.length <= CAP - 600) {
@@ -434,6 +451,19 @@ function Trees({ net, blocks, season }: { net: Net; blocks: Block[]; season: Sea
     // street trees: a row down each side of every proper road, in the outer strip of the sidewalk
     const solid = [...net.pads, ...net.buildings];
     const blocked = (x: number, y: number) => solid.some((q) => x > q.x0 - 2 && x < q.x1 + 2 && y > q.y0 - 2 && y < q.y1 + 2);
+    // the trees of the park, planted along its walks: each on its own, a clean stem and a round crown
+    for (const t of glade?.trees ?? []) {
+      if (i + 2 > CAP - 600 || !clearOf(net, t.x, t.y, 3)) continue;
+      const hue = leaf(t.k, (t.k * 7.3) % 1, false, season);
+      stem(t.x, t.y, t.s * 1.3, t.s * 0.09);
+      for (const [dx, dy, dz, k] of [[0, 1.5, 0, 1], [0.35, 1.15, 0.3, 0.75]]) {
+        o.position.set(t.x + dx * t.s, dy * t.s, t.y + dz * t.s); o.scale.set(t.s * k, t.s * k, t.s * k); o.rotation.set(0, t.k * 5, 0);
+        o.updateMatrix();
+        m.setMatrixAt(i, o.matrix);
+        m.setColorAt(i++, hue);
+      }
+      if (lets && hue.g < hue.r * 1.05) drop(t.x, t.y, t.s * 1.8, hue);
+    }
     for (const r of net.roads) {
       if (r.rank < 2 || r.bridge || r.ring) continue;
       for (const side of [-1, 1]) {
@@ -461,7 +491,7 @@ function Trees({ net, blocks, season }: { net: Net; blocks: Block[]; season: Sea
       q.instanceMatrix.needsUpdate = true;
       if (q.instanceColor) q.instanceColor.needsUpdate = true;
     }
-  }, [wood, net, blocks, season]);
+  }, [wood, net, blocks, glade, season]);
 
   return (
     <>

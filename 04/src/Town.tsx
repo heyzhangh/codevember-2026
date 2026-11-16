@@ -2,9 +2,10 @@
 // Planted once, from the place as it stood. Nothing takes them down: roads go round.
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Color, InstancedBufferAttribute, InstancedMesh, Matrix4, MeshStandardMaterial, Object3D } from 'three';
-import { BANDED, BAY, CELLS, FLOOR, GALLERY, LOW, PAINTED, STRIPED, facades } from './facade';
+import { BANDED, BAY, CELLS, FLOOR, GALLERY, GLOW, LOW, PAINTED, STRIPED, facades } from './facade';
+import { NIGHT } from './haze';
 import { pavingGeometry, rectClear } from './geo';
-import { rng, type Net, type Rect, type V } from './net';
+import { rng, type Building, type Net, type Rect, type V } from './net';
 
 export interface Block extends Rect {
   h: number;
@@ -17,6 +18,11 @@ export interface Block extends Rect {
   /** turned out of the grid: radians about its middle. Its own rect is then what it covers, and `inner` the house */
   turn?: number;
   inner?: Rect;
+  /** one of the little ones by the road: a road painted through it takes it down, where a big house stops the road */
+  small?: boolean;
+  /** a filling station's roof over the pumps, and the yard both stand on */
+  pumps?: Building;
+  pad?: Rect;
 }
 
 /** A point of a house, turned with it. */
@@ -24,6 +30,65 @@ export function turned(b: Block, x: number, y: number): [number, number] {
   if (!b.turn) return [x, y];
   const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, c = Math.cos(b.turn), n = Math.sin(b.turn);
   return [cx + (x - cx) * c + (y - cy) * n, cy - (x - cx) * n + (y - cy) * c];
+}
+
+/** What the little ones by the road are, and what they look like from above: walls, roof, floor to floor. */
+const SMALL = {
+  house: { w: [7, 11], d: [6, 9], h: 3.2 },
+  // made up, all three: a burger place under a red roof, a coffee drive-through under a green one, a filling station in white
+  food: { w: [13, 16], d: [9, 11], h: 4.2, wall: 0xe6d6a4, roof: 0xb5352b },
+  coffee: { w: [9, 12], d: [7, 9], h: 4, wall: 0xd9cfbb, roof: 0x2f5e48 },
+  fuel: { w: [8, 10], d: [6, 7], h: 3.6, wall: 0xe9e7e1, roof: 0xd9d6cf },
+} as const;
+
+/**
+ * The little ones: houses, and along the bigger roads a burger place, a coffee place, a filling station. Each stands by a road,
+ * square to it, wherever the big ones and the roads have left room. `taken` is what stands already.
+ */
+export function plantSmall(net: Net, taken: Block[], many = 210): Block[] {
+  const r = rng(91), out: Block[] = [];
+  const roads = net.roads.filter((o) => !o.bridge && !o.ring && o.rank >= 1 && o.len > 30);
+  if (!roads.length) return out;
+  const clash = (b: Rect, gap: number) => [...taken, ...out].some((o) => b.x0 < o.x1 + gap && b.x1 > o.x0 - gap && b.y0 < o.y1 + gap && b.y1 > o.y0 - gap);
+  for (let tries = 0; tries < many * 30 && out.length < many; tries++) {
+    const road = roads[(r() * roads.length) | 0], i = (r() * (road.pts.length - 1)) | 0, t = r();
+    const a = road.pts[i], b = road.pts[i + 1], len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1) continue;
+    const dx = (b.x - a.x) / len, dy = (b.y - a.y) / len, side = r() < 0.5 ? -1 : 1;
+    const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t;
+    if (Math.abs(px) > 400 || Math.abs(py) > 380) continue;
+    const k = r(), square = Math.abs(dx) > 0.985 || Math.abs(dy) > 0.985;
+    // trade wants a road with traffic on it; a filling station is only built square to the map, since its roof cannot be turned
+    const kind = road.rank < 2 || k > 0.3 ? 'house' : k < 0.1 && square ? 'fuel' : k < 0.2 ? 'food' : 'coffee';
+    const s = SMALL[kind], w = s.w[0] + r() * (s.w[1] - s.w[0]), d = s.d[0] + r() * (s.d[1] - s.d[0]);
+    // a filling station stands back behind its pumps
+    const back = road.hw + (kind === 'fuel' ? 17 : kind === 'house' ? 7 + r() * 5 : 9) + d / 2;
+    const cx = px - dy * side * back, cy = py + dx * side * back;
+    const turn = square ? 0 : Math.atan2(-dy, dx);
+    const along = square && Math.abs(dy) > 0.5;
+    const hw = (along ? d : w) / 2, hd = (along ? w : d) / 2;
+    const c = Math.abs(Math.cos(turn)), n = Math.abs(Math.sin(turn));
+    const box = { x0: cx - (hw * c + hd * n), y0: cy - (hw * n + hd * c), x1: cx + (hw * c + hd * n), y1: cy + (hw * n + hd * c) };
+    // the whole plot of a filling station has to be free: from the road back to the shop
+    const plot = kind === 'fuel'
+      ? { x0: Math.min(box.x0, px - dy * side * (road.hw + 5) - 9 * Math.abs(dx)), y0: Math.min(box.y0, py + dx * side * (road.hw + 5) - 9 * Math.abs(dy)), x1: Math.max(box.x1, px - dy * side * (road.hw + 5) + 9 * Math.abs(dx)), y1: Math.max(box.y1, py + dx * side * (road.hw + 5) + 9 * Math.abs(dy)) }
+      : box;
+    if (!stands(net, box, 3) || clash(plot, kind === 'house' ? 2 : 4)) continue;
+    const look = 'wall' in s ? { wall: s.wall, roof: s.roof } : { wall: WALLS[(r() * WALLS.length) | 0], roof: ROOFS[(r() * ROOFS.length) | 0] };
+    const house: Block = { ...box, h: s.h * (kind === 'house' && r() < 0.35 ? 2 : 1), style: LOW, ...look, path: [], small: true };
+    if (turn) { house.turn = turn; house.inner = { x0: cx - hw, y0: cy - hd, x1: cx + hw, y1: cy + hd }; }
+    // the door looks at the road, and the path goes straight to its edge
+    house.path = [{ x: cx + dy * side * (d / 2), y: cy - dx * side * (d / 2) }, { x: px - dy * side * (road.hw + 1), y: py + dx * side * (road.hw + 1) }];
+    if (kind === 'fuel') {
+      // the roof over the pumps, between the shop and the road, and the yard under all of it
+      const mx = px - dy * side * (road.hw + 8), my = py + dx * side * (road.hw + 8);
+      const rw = along ? 4 : 8, rd = along ? 8 : 4;
+      house.pumps = { x0: mx - rw, y0: my - rd, x1: mx + rw, y1: my + rd, h: 5.2, wall: 0xcfd2d4, roof: 0xf1efe9, canopy: true };
+      house.pad = { x0: plot.x0 - 1, y0: plot.y0 - 1, x1: plot.x1 + 1, y1: plot.y1 + 1 };
+    }
+    out.push(house);
+  }
+  return out;
 }
 
 /** A quarter of the houses stand at an angle, where there is room to: nothing is built to one grid. */
@@ -136,11 +201,12 @@ export function plantTown(net: Net): Block[] {
 
 const HASH = /* glsl */ `float wh(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }`;
 
-/** Walls that wear a sheet from facade.ts: whole bays and whole floors, whatever the box is scaled to. */
+/** Walls that wear a sheet from facade.ts: whole bays and whole floors, whatever the box is scaled to. After dark some of the rooms are lit. */
 function walls() {
   const m = new MeshStandardMaterial({ roughness: 0.85 });
   m.onBeforeCompile = (s) => {
     s.uniforms.uFacade = { value: facades() };
+    s.uniforms.uNight = NIGHT;
     s.vertexShader = s.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aStyle; varying float vStyle; varying vec3 vLp; varying vec3 vSz; varying vec3 vOn;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>
@@ -150,8 +216,9 @@ function walls() {
         #endif
         vLp = position * vSz; vOn = normal; vStyle = aStyle;`);
     s.fragmentShader = s.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2DArray uFacade; varying float vStyle; varying vec3 vLp; varying vec3 vSz; varying vec3 vOn;\n' + HASH)
+      .replace('#include <common>', '#include <common>\nuniform sampler2DArray uFacade; uniform float uNight; varying float vStyle; varying vec3 vLp; varying vec3 vSz; varying vec3 vOn;\n' + HASH)
       .replace('#include <color_fragment>', `#include <color_fragment>
+        vec3 rooms = vec3(0.0);
         if (abs(vOn.y) < 0.5) {
           bool side = abs(vOn.x) > 0.5;
           float len = side ? vSz.z : vSz.x;
@@ -167,12 +234,18 @@ function walls() {
             vec2 st = (vec2(u, v) * n + floor(vec2(seed, fract(seed * 7.3)) * ${CELLS.toFixed(1)})) / ${CELLS.toFixed(1)};
             vec4 t = texture(uFacade, vec3(st, vStyle));
             diffuseColor.rgb = t.rgb * mix(vec3(1.0), paint, t.a);
+            if (uNight > 0.0) {
+              // somebody is home in half of the rooms, and they do not all reach for the switch at once
+              float home = wh(floor(vec2(u, v) * n) * 1.7 + vSz.xz + 3.0) / 0.5;
+              rooms = texture(uFacade, vec3(st, vStyle + ${GLOW.toFixed(1)})).rgb * step(home, 1.0) * smoothstep(home * 0.7, home * 0.7 + 0.3, uNight) * 2.4;
+            }
           }
           // no two stretches of wall have weathered alike
           diffuseColor.rgb *= 0.9 + 0.1 * wh(vec2(floor(u * len / 6.4), floor(v * vSz.y / 6.0)) + vSz.xz);
-        }`);
+        }`)
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += rooms;');
   };
-  m.customProgramCacheKey = () => 'walls';
+  m.customProgramCacheKey = () => 'walls-lit';
   return m;
 }
 
