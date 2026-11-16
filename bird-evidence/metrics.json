@@ -1,0 +1,213 @@
+{
+  "browser": "156.0.8078.79",
+  "platform": "linux",
+  "viewport": {
+    "width": 960,
+    "height": 720,
+    "deviceScaleFactor": 1
+  },
+  "softwareGLRequested": true,
+  "fpsMethod": "At least 8 seconds AND 10 wall-clock RAF intervals after compilation; real animation, no virtual clock",
+  "staticSubdirectory": "/bird-preview/",
+  "variants": {
+    "original": {
+      "name": "Lampornis calolaemus",
+      "bones": 84,
+      "meshes": {
+        "contour": {
+          "feathers": 10621,
+          "vertices": 138872,
+          "triangles": 145492
+        },
+        "flight": {
+          "feathers": 388,
+          "vertices": 6196,
+          "triangles": 6856
+        },
+        "fuzz": {
+          "feathers": 0,
+          "vertices": 29403,
+          "triangles": 57600
+        }
+      },
+      "featherTotal": 11009,
+      "geometryBufferBytes": 25197510,
+      "render": {
+        "frame": 69,
+        "calls": 18,
+        "triangles": 392848,
+        "points": 0,
+        "lines": 0
+      },
+      "memory": {
+        "geometries": 11,
+        "textures": 5
+      },
+      "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+      "pixelRatio": 1,
+      "head": [
+        0.0024813382388210303,
+        0.8304049634204068,
+        0.0029304315875511647
+      ],
+      "fps": 0.17366839756169572,
+      "sampledFrames": 10,
+      "sampledMilliseconds": 57580.99999999999,
+      "frameMilliseconds": {
+        "p50": 5399.699999999997,
+        "p95": 11199.599999999999
+      },
+      "billLength": 0.44,
+      "bellyWidth": 0.262,
+      "gorget": 8007935,
+      "bodyTip": 5195350,
+      "scripts": [
+        "/bird-preview/assets/index-B8KiQs8s.js"
+      ],
+      "clock": {
+        "mindTime": 0.6747999999998139,
+        "dt": 0.05
+      },
+      "behaviour": {
+        "saccades": 24,
+        "blink": 1,
+        "minBreath": -1.087150880957467,
+        "maxBreath": 1.0882867060427677
+      },
+      "disposal": {
+        "frames": 20,
+        "disposed": true,
+        "geometries": 0
+      },
+      "errors": [],
+      "externalRequests": []
+    },
+    "proof": {
+      "name": "Extraction proof: amber and teal (temporary)",
+      "bones": 84,
+      "meshes": {
+        "contour": {
+          "feathers": 11306,
+          "vertices": 147850,
+          "triangles": 154924
+        },
+        "flight": {
+          "feathers": 388,
+          "vertices": 6196,
+          "triangles": 6856
+        },
+        "fuzz": {
+          "feathers": 0,
+          "vertices": 29403,
+          "triangles": 57600
+        }
+      },
+      "featherTotal": 11694,
+      "geometryBufferBytes": 26334186,
+      "render": {
+        "frame": 68,
+        "calls": 18,
+        "triangles": 411712,
+        "points": 0,
+        "lines": 0
+      },
+      "memory": {
+        "geometries": 11,
+        "textures": 5
+      },
+      "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+      "pixelRatio": 1,
+      "head": [
+        0.002478202835037636,
+        0.830567399689803,
+        0.002928688543824662
+      ],
+      "fps": 0.2245596385488058,
+      "sampledFrames": 10,
+      "sampledMilliseconds": 44531.6,
+      "frameMilliseconds": {
+        "p50": 4799.700000000004,
+        "p95": 10049.599999999999
+      },
+      "billLength": 0.23,
+      "bellyWidth": 0.30916,
+      "gorget": 2152143,
+      "bodyTip": 14123053,
+      "scripts": [
+        "/bird-preview/assets/index-B8KiQs8s.js"
+      ],
+      "clock": {
+        "mindTime": 0.6091000000003259,
+        "dt": 0.05
+      },
+      "behaviour": {
+        "saccades": 22,
+        "blink": 1,
+        "minBreath": -1.072573433531906,
+        "maxBreath": 1.0847383849102308
+      },
+      "disposal": {
+        "frames": 19,
+        "disposed": true,
+        "geometries": 0
+      },
+      "errors": [],
+      "externalRequests": []
+    }
+  },
+  "build": [
+    {
+      "file": "LICENSE",
+      "bytes": 1070,
+      "gzipBytes": 655
+    },
+    {
+      "file": "NOTICE.txt",
+      "bytes": 233,
+      "gzipBytes": 204
+    },
+    {
+      "file": "assets/index-B8KiQs8s.js",
+      "bytes": 680939,
+      "gzipBytes": 183827
+    },
+    {
+      "file": "assets/index-pXTdmHEv.css",
+      "bytes": 140,
+      "gzipBytes": 126
+    },
+    {
+      "file": "index.html",
+      "bytes": 598,
+      "gzipBytes": 362
+    }
+  ],
+  "engineHashes": {
+    "src/engine/index.ts": "76472386f6a4824b97c5668b3e0bdafb0be5bea0704c6bc848b0af742d19f1c4",
+    "src/engine/loft.ts": "4967052a79322a219cef0807460d366ff12a2554fbd78cafe50b7b70566000f3",
+    "src/engine/motion/blink.ts": "482a8818d24250619b5e16e6117be93ebb89300278ebfbc5fadc0613a30c3e18",
+    "src/engine/motion/breath.ts": "4a959d9f91d6906cb4f61b668213c6d38a60ab5fb5857b4e1c4289a09fd2bc37",
+    "src/engine/motion/flee.ts": "3c773c65dc045994692600d1e82591245fbe945d8eb9eb1b504341ff872d0ac7",
+    "src/engine/motion/forage.ts": "9ae47d63f2f488bcdf50d4c6874a9d616a341aeea13bcb074bb3edb7748ff38e",
+    "src/engine/motion/gaze.ts": "fee5ce4eb3316d4ddfc343c9b2dd121173fee555d80b352b8325603c9b0f8b81",
+    "src/engine/motion/hop.ts": "b3c9f8b723342857b2611f2b9598f645f162594cdec7cf78f55f3fe498cd3195",
+    "src/engine/motion/mind.ts": "e651b23cc605c9fddef801b0d453fdb3b490a0bd2e15f4fa735654e00dc60778",
+    "src/engine/motion/mouth.ts": "c02b75aed20374c24870a80495816d4032eb40ec82548fb8179fe9fb933c67f0",
+    "src/engine/motion/posture.ts": "9caee336114ca798464523362555c1764459f699d566a3d5c62472e074c53522",
+    "src/engine/motion/preen.ts": "7f4bc875fe15906d512f251ce4b7b2c1acdf87b11ef2dae5262bbebe01cc443d",
+    "src/engine/motion/ruffle.ts": "05d7094e2a26f10bec993bc03bafe876206cbacb518de3bdd7539f0f82c19a54",
+    "src/engine/motion/startle.ts": "c8b409abaabfb96814779c444654faad419b27b316f75eb7c8d66e6c2fa07c3b",
+    "src/engine/motion/tail.ts": "9e8a9f31faa797483bd9fff039c026396a10bae7f87babc15e4d9a71700d86df",
+    "src/engine/motion/wings.ts": "2ecb519638c1c7fb93258d9be326a24f4381c5dbd234a9ac70b2afa20f4895eb",
+    "src/engine/palettes.ts": "1e86caae205dde29b1c4b9c67e557d1bb332333db7d2d245ae2abda387fa61b7",
+    "src/engine/parts.ts": "dd470367094ff278deff83770b2d042d08d6c7f4ae7fe81f397ad8abeac272d1",
+    "src/engine/plumageGeometry.ts": "4f3ec1d6ca9e2dbe63158fee667039b0f9de23fcda56002681a0a849eb91e1c7",
+    "src/engine/plumageMaterial.ts": "ae25439aa86beff7ae7e0b07add0b62d147271c5c29749498dd0a8bfd70e3bf7",
+    "src/engine/pose.ts": "9f1a8602d5309fe5af020cb0bab987d1ebc2bbd289288bfb720e8b9a8cf80b43",
+    "src/engine/rig.ts": "3f7ac46af0f0071af00a420a6cee65f346e862846343dd567971b34b8bd08e87",
+    "src/engine/species.ts": "6599615652210dc81959c5397a96e249779da6f5a9052f8a44c577ff45be3d03",
+    "src/engine/types.ts": "554f323b9110a7fc9c3f1fc94dc09cc63f87d71fdf6f8c18f27e65fa7ecfbc82",
+    "src/engine/util.ts": "b73fd9f15e8c7ec3b48469e8492f494c2d5a9aa4f97789da26011d81071650bb",
+    "src/engine/wingBlur.ts": "bf955eb81e085b3de3625fbe80d7d77875b477926e0c36a6bdb74bb994f6f542"
+  }
+}

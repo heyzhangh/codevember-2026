@@ -1,0 +1,5 @@
+Feather bird engine and forest backdrop
+Copyright (c) 2026 Theo Tillberg
+Source: https://github.com/ttillberg/codevember-2026/tree/f7618b3/12
+Extraction and standalone host for heyzhangh.
+Released under the MIT license; see LICENSE.

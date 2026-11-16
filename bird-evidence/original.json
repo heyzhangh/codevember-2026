@@ -1,0 +1,17 @@
+{
+  "species": "Lampornis calolaemus",
+  "bones": 84,
+  "pixelRatio": 0.5,
+  "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+  "loading": false,
+  "reveal": 1,
+  "errors": [],
+  "sourceModified": false,
+  "harness": "RAF callback receives performance.now() to avoid upstream negative first dt",
+  "viewport": {
+    "width": 960,
+    "height": 720,
+    "dpr": 0.5
+  },
+  "query": "?still&quiet&pose=three"
+}
